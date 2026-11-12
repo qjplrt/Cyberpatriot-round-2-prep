@@ -1,0 +1,147 @@
+
+#!/usr/bin/env bash
+# CyberPatriot Debian 12 - Authorized password rotation
+# Run: sudo bash 02_CHANGE_PASSWORDS.sh
+
+set -Eeuo pipefail
+umask 077
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Run using: sudo bash 02_CHANGE_PASSWORDS.sh"
+    exit 1
+fi
+
+source /etc/os-release
+if [[ "$ID" != debian || "$VERSION_ID" != 12 ||
+      "$VERSION_CODENAME" != bookworm ]]; then
+    echo "STOP: Debian 12 Bookworm only."
+    exit 1
+fi
+
+if [[ -z "${SUDO_USER:-}" || "$SUDO_USER" == root ]]; then
+    echo "Run directly from your normal account with sudo."
+    exit 1
+fi
+
+command -v openssl >/dev/null
+
+RUN_USER="$SUDO_USER"
+RUN_INFO="$(getent passwd "$RUN_USER")"
+IFS=: read -r _ _ RUN_UID RUN_GID _ RUN_HOME _ <<< "$RUN_INFO"
+
+if [[ -z "$RUN_HOME" || ! -d "$RUN_HOME" ]]; then
+    echo "Could not identify Downloads location."
+    exit 1
+fi
+
+TARGETS=(
+    hhogan
+    bbanner
+    swilson
+    sstrange
+    slang
+    cdanvers
+    okoye
+    kbishop
+    ybelova
+    jfoster
+    nleeds
+    mjwatson
+    jtorres
+    pcarter
+)
+
+echo "=== CYBERPATRIOT PASSWORD ROTATION ==="
+echo "14 intended accounts."
+echo "Other six administrators will not be changed."
+
+# Verify the entire account list before changing anything.
+for u in "${TARGETS[@]}"; do
+    if ! id "$u" >/dev/null 2>&1; then
+        echo "STOP: Missing account $u. No passwords changed."
+        exit 1
+    fi
+done
+
+AUTOLOGIN_USER="$(
+    grep -RhsE '^[[:space:]]*autologin-user[[:space:]]*=' \
+        /etc/lightdm 2>/dev/null |
+    tail -1 | cut -d= -f2- | xargs 2>/dev/null || true
+)"
+
+DOWNLOADS="$RUN_HOME/Downloads"
+
+if [[ ! -d "$DOWNLOADS" ]]; then
+    install -d -m 700 -o "$RUN_UID" -g "$RUN_GID" "$DOWNLOADS"
+fi
+
+OUT="$(mktemp "$DOWNLOADS/CyberPatriot_Passwords_XXXXXX.txt")"
+chown "$RUN_UID:$RUN_GID" "$OUT"
+chmod 600 "$OUT"
+
+{
+    echo "CYBERPATRIOT PASSWORD RECORD"
+    echo "Generated: $(date -u)"
+    echo "OS: Debian 12 Bookworm"
+    echo
+    echo "Keep this file private."
+    echo
+} > "$OUT"
+
+SUCCESS=0
+SKIPPED=0
+FAILED=0
+
+for u in "${TARGETS[@]}"; do
+
+    # Protect the primary account and current operator.
+    if [[ "$u" == "$AUTOLOGIN_USER" || "$u" == "$RUN_USER" ]]; then
+        echo "SKIPPED: $u (automatic-login/current account protection)"
+        printf '%s: SKIPPED - protected account\n' "$u" >> "$OUT"
+        SKIPPED=$((SKIPPED + 1))
+        continue
+    fi
+
+    # 48 random hexadecimal characters, with a complexity suffix.
+    PASSWORD="$(openssl rand -hex 24)!Aa7"
+
+    if printf '%s:%s\n' "$u" "$PASSWORD" | chpasswd; then
+
+        # Record the credential immediately after a successful change.
+        printf '%s:%s\n' "$u" "$PASSWORD" >> "$OUT"
+
+        if chage -m 7 -M 90 -W 5 "$u"; then
+            echo "SUCCESS: $u"
+        else
+            echo "WARNING: Password changed, but aging needs review for $u"
+        fi
+
+        SUCCESS=$((SUCCESS + 1))
+    else
+        echo "FAILED: $u"
+        printf '%s: FAILED - review manually\n' "$u" >> "$OUT"
+        FAILED=$((FAILED + 1))
+    fi
+
+    unset PASSWORD
+done
+
+{
+    echo
+    echo "SUCCESSFUL CHANGES: $SUCCESS"
+    echo "SKIPPED: $SKIPPED"
+    echo "FAILED: $FAILED"
+} >> "$OUT"
+
+chown "$RUN_UID:$RUN_GID" "$OUT"
+chmod 600 "$OUT"
+
+echo
+echo "=== FINISHED ==="
+echo "Successful: $SUCCESS"
+echo "Skipped: $SKIPPED"
+echo "Failed: $FAILED"
+echo "Credential file:"
+echo "$OUT"
+echo
+echo "Open it from Downloads and verify every changed account."
