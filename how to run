@@ -1,0 +1,50 @@
+1. Save Script 1
+Open your Debian VM terminal.
+nano ~/lrt.sh
+
+
+Paste the entire latest lrt.sh script.
+
+Save it:
+1. Ctrl + O
+2. Press Enter
+3. Ctrl + X
+Important: Before saving, replace Section 9 (automatic package updates) with the corrected version I gave you in my previous message.
+2. Run Script 1
+sudo bash ~/lrt.sh
+
+
+It will ask you to type READY.
+
+Later, it'll ask you to inspect your APT repositories and type BOOKWORM to confirm them. Only do that after checking they're trusted Debian 12 repositories.
+
+Let it finish and note the report location printed at the end.
+3. Save Script 2
+nano ~/passwords.sh
+
+
+Paste the latest 02_CHANGE_PASSWORDS.sh script.
+
+Save with Ctrl + O, Enter, Ctrl + X.
+4. Run Script 2
+sudo bash ~/passwords.sh
+
+
+Credentials saved automatically
+Your updated passwords will be saved in:
+
+~/Downloads/CyberPatriot_Passwords_....txt
+
+The script skips your current login account and detected automatic-login account.
+5. After both scripts finish
+Run these checks:
+sudo ufw status verbose
+sudo sshd -t
+systemctl status ssh
+getent group sudo
+cat /etc/X11/default-display-manager
+
+
+Then open the CyberPatriot Scoring Report and work through remaining lost points.
+
+My advice: Don't run both scripts back-to-back without checking Script 1's output first. Keep your current VM session open, and don't delete your backups.
