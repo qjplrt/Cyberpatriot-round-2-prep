@@ -1,0 +1,32 @@
+Run instructions
+Save each script separately in your Debian VM:
+nano kernel_hardening.sh
+
+
+Paste Script 1, save, then:
+sudo bash kernel_hardening.sh
+
+
+Repeat for:
+nano firewall_ufw.sh
+sudo bash firewall_ufw.sh
+
+
+And:
+nano sshd_hardening.sh
+sudo bash sshd_hardening.sh
+
+
+Final verification
+After all three:
+sysctl kernel.randomize_va_space
+sudo ufw status verbose
+sudo sshd -t
+sudo sshd -T | grep -E 'permitrootlogin|passwordauthentication|usepam'
+systemctl is-enabled ssh
+systemctl is-active ssh
+
+
+My recommended order: kernel → SSH → firewall. Run them from the VM's local console, keep your existing administrator session open, and check the CyberPatriot scoring report afterward.
+
+The kernel script is supplemental hardening, not a guaranteed scoring item from your README. The SSH and UFW scripts directly address explicit README requirements.
