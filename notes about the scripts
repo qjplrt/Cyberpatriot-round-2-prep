@@ -1,0 +1,16 @@
+Script 1 — qlrt.sh
+- No SSH AllowUsers restriction that could unexpectedly block logins.
+- SSH configuration is tested before being reloaded, with backups for rollback.
+- UFW rules are added before enabling the firewall, and existing firewall rules aren't reset.
+- PAM is configured using Debian's PAM profile manager instead of blindly editing the authentication stack.
+- APT refuses moving release aliases such as stable and trixie.
+- Package upgrades use --no-remove and never use dist-upgrade.
+- Only Apache's service is disabled when present; its package is retained.
+- All suspicious accounts and files are reported for review instead of blindly deleted.
+Debian's own documentation confirms that apt-get upgrade doesn't remove installed packages, and --no-remove makes APT abort if a requested operation would remove one
+
+
+Script 2 — 02_CHANGE_PASSWORDS.sh
+This retains your requested password behavior, but adds two safeguards: it checks all 14 accounts before changing any password, and skips both the detected automatic-login account and the account you're currently using.
+
+It does not use the insecure security1 password for hhogan.
