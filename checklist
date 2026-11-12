@@ -1,0 +1,68 @@
+Competition completion tracker
+0/42
+
+
+
+1. Forensics questions
+[ ] Answer every question on the Desktop.
+[ ] Inspect suspicious files before altering them.
+[ ] Use xxd -l 16 filename if a question asks for magic numbers.
+[ ] Enter answers in the exact requested format.
+
+
+2. Users and administrator privileges
+[ ] Compare every human account against the README.
+[ ] Only the seven listed administrators should have sudo privileges.
+[ ] Inspect sudo, admin, wheel, adm and lpadmin groups.
+[ ] Inspect /etc/sudoers and /etc/sudoers.d for direct privileges.
+[ ] Check UID 0 accounts; normally only root should have UID 0.
+[ ] Check /etc/shadow for empty password fields.
+[ ] Make sure no authorized account or home directory was deleted.
+
+
+3. Password security
+[ ] Verify hhogan received a new password.
+[ ] Verify all 13 standard-user accounts were changed unless protected.
+[ ] Check minimum age 7, maximum age 90 and warning age 5.
+[ ] Check password complexity and whether history enforcement is present.
+[ ] Verify the credentials file in Downloads.
+
+
+4. Firewall and remote access
+[ ] Check sudo ufw status verbose.
+[ ] Make sure UFW is enabled.
+[ ] Make sure incoming traffic is denied by default.
+[ ] Make sure the SSH port is allowed.
+[ ] Run sudo sshd -t.
+[ ] Confirm PermitRootLogin is no.
+[ ] Confirm SSH is enabled and active.
+
+
+5. Packages and applications
+[ ] Refresh the package cache and check for pending updates.
+[ ] Verify Chromium, OpenSSH and systemd versions.
+[ ] Confirm repositories use Debian 12 Bookworm.
+[ ] Manually review prohibited applications; don't remove random packages.
+[ ] Check the Chromium default browser and popup-blocking settings.
+
+
+6. Prohibited files and persistence
+[ ] Review suspicious music, video and image files.
+[ ] Check Downloads, Desktop, Documents, /tmp, /opt and /mnt.
+[ ] Inspect suspicious archives and installers.
+[ ] Review cron jobs and scheduled timers.
+[ ] Inspect hidden files and startup scripts.
+[ ] Check listening ports and suspicious running services.
+[ ] Review /etc/hosts and authentication logs.
+[ ] Inspect unexpected SUID/SGID and unowned files.
+
+
+7. Final scenario checks
+[ ] LightDM must remain the display manager.
+[ ] Guest access should be disabled if applicable.
+[ ] Apache should not be running if present.
+[ ] CCS must remain active.
+[ ] Don't change time, date or timezone.
+[ ] Don't disable JavaScript in the scoring application.
+
+Reset checklist
