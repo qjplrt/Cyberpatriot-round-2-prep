@@ -11,6 +11,6 @@ Debian's own documentation confirms that apt-get upgrade doesn't remove installe
 
 
 Script 2 — 02_CHANGE_PASSWORDS.sh
-This retains your requested password behavior, but adds two safeguards: it checks all 14 accounts before changing any password, and skips both the detected automatic-login account and the account you're currently using.
+This retains password behavior, but adds two safeguards: it checks all 14 accounts before changing any password, and skips both the detected automatic-login account and the account you're currently using.
 
 It does not use the insecure security1 password for hhogan.
