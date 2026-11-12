@@ -1,0 +1,38 @@
+Commands worth keeping nearby
+These are particularly useful for manually finding missed points:
+
+Accounts
+getent passwd
+awk -F: '$3 == 0 {print $1,$3}' /etc/passwd
+getent group sudo
+getent group adm
+getent group lpadmin
+sudo visudo -c
+
+
+Password security
+sudo awk -F: '$2 == "" {print $1}' /etc/shadow
+sudo chage -l hhogan
+sudo chage -l bbanner
+
+
+Firewall and SSH
+sudo ufw status numbered
+sudo ufw status verbose
+sudo sshd -t
+sudo systemctl status ssh
+
+
+Services and ports
+systemctl --type=service --state=running
+sudo ss -tulpn
+systemctl list-timers --all
+
+
+Installed applications
+dpkg -l | grep -Ei 'nmap|zenmap|ophcrack|john|hydra|wireshark|tshark|nikto|netcat|metasploit'
+
+
+Files
+sudo find /home /tmp /opt /mnt /media -type f \
+\( -iname '*.mp3' -o -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.wav' \) -print
