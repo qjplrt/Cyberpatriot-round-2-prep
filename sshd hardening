@@ -1,0 +1,185 @@
+3. sshd_hardening.sh
+Critical README requirement
+What it does:
+SSH setting	Configuration
+PermitRootLogin	no
+PermitEmptyPasswords	no
+PasswordAuthentication	yes
+UsePAM	yes
+X11Forwarding	no
+MaxAuthTries	4
+IgnoreRhosts	yes
+HostbasedAuthentication	no
+LogLevel	VERBOSE
+
+It does NOT:
+- Disable SSH.
+- Change the SSH port.
+- Restrict authorized users with AllowUsers.
+- Disable password authentication.
+- Restart SSH unnecessarily.
+
+
+
+
+
+#!/usr/bin/env bash
+# sshd_hardening.sh
+# Debian 12 Bookworm only
+# Run: sudo bash sshd_hardening.sh
+
+set -Eeuo pipefail
+umask 077
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Run using: sudo bash sshd_hardening.sh"
+    exit 1
+fi
+
+source /etc/os-release
+
+if [[ "$ID" != debian || "$VERSION_ID" != 12 ||
+      "$VERSION_CODENAME" != bookworm ]]; then
+    echo "STOP: Debian 12 Bookworm required."
+    exit 1
+fi
+
+CFG="/etc/ssh/sshd_config"
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+BACKUP="/root/CP-SSH-BACKUP-$STAMP"
+
+if [[ ! -f "$CFG" ]] || ! command -v sshd >/dev/null 2>&1; then
+    echo "STOP: OpenSSH server configuration is unavailable."
+    exit 1
+fi
+
+if ! sshd -t; then
+    echo "STOP: Existing SSH configuration is already invalid."
+    exit 1
+fi
+
+mkdir -p "$BACKUP"
+chmod 700 "$BACKUP"
+
+cp -a "$CFG" "$BACKUP/sshd_config"
+
+echo "=== CURRENT EFFECTIVE SSH SETTINGS ==="
+sshd -T | grep -E \
+'^(port|permitrootlogin|passwordauthentication|permitemptypasswords|usepam|x11forwarding) ' || true
+
+echo
+echo "=== BUILDING SAFE CONFIGURATION ==="
+
+TMP="$(mktemp /etc/ssh/sshd_config.cp.XXXXXX)"
+CLEAN="$(mktemp /etc/ssh/sshd_config.clean.XXXXXX)"
+
+# Remove an older managed block if the script was previously run.
+awk '
+    $0 == "# BEGIN CYBERPATRIOT SSH SETTINGS" {skip=1; next}
+    $0 == "# END CYBERPATRIOT SSH SETTINGS" {skip=0; next}
+    !skip {print}
+' "$CFG" > "$CLEAN"
+
+cat > "$TMP" <<'EOF'
+# BEGIN CYBERPATRIOT SSH SETTINGS
+PermitRootLogin no
+PermitEmptyPasswords no
+PasswordAuthentication yes
+UsePAM yes
+X11Forwarding no
+MaxAuthTries 4
+IgnoreRhosts yes
+HostbasedAuthentication no
+LogLevel VERBOSE
+# END CYBERPATRIOT SSH SETTINGS
+
+EOF
+
+cat "$CLEAN" >> "$TMP"
+
+chmod 600 "$TMP"
+chown root:root "$TMP"
+
+echo "=== VALIDATING TEMPORARY CONFIGURATION ==="
+
+if ! sshd -t -f "$TMP"; then
+    echo "ERROR: Temporary SSH configuration failed."
+    echo "Original configuration remains unchanged."
+    rm -f "$TMP" "$CLEAN"
+    exit 1
+fi
+
+# Preserve the current port configuration.
+OLD_PORTS="$(sshd -T | awk '$1=="port" {print $2}' | sort -un)"
+
+if ! mv "$TMP" "$CFG"; then
+    echo "Could not install new configuration."
+    rm -f "$TMP" "$CLEAN"
+    exit 1
+fi
+
+rm -f "$CLEAN"
+
+echo
+echo "=== VERIFYING EFFECTIVE SSH CONFIGURATION ==="
+
+if ! sshd -t; then
+    echo "ERROR: Installed configuration failed validation."
+    cp -a "$BACKUP/sshd_config" "$CFG"
+    exit 1
+fi
+
+EFFECTIVE="$(sshd -T)"
+
+check_setting() {
+    local expected="$1"
+    if grep -qx "$expected" <<< "$EFFECTIVE"; then
+        echo "OK: $expected"
+    else
+        echo "FAILED: $expected"
+        return 1
+    fi
+}
+
+if ! check_setting "permitrootlogin no" ||
+   ! check_setting "permitemptypasswords no" ||
+   ! check_setting "passwordauthentication yes" ||
+   ! check_setting "usepam yes" ||
+   ! check_setting "x11forwarding no"; then
+
+    echo "Configuration verification failed."
+    echo "Restoring original SSH configuration."
+
+    cp -a "$BACKUP/sshd_config" "$CFG"
+    exit 1
+fi
+
+NEW_PORTS="$(sshd -T | awk '$1=="port" {print $2}' | sort -un)"
+
+if [[ "$OLD_PORTS" != "$NEW_PORTS" ]]; then
+    echo "SSH port unexpectedly changed. Restoring backup."
+    cp -a "$BACKUP/sshd_config" "$CFG"
+    exit 1
+fi
+
+echo
+echo "=== ENSURING SSH REMAINS ENABLED ==="
+
+systemctl enable ssh
+
+if systemctl is-active --quiet ssh; then
+    systemctl reload ssh
+else
+    systemctl start ssh
+fi
+
+echo
+echo "=== FINAL STATUS ==="
+
+systemctl status ssh --no-pager
+sshd -T | grep -E \
+'^(port|permitrootlogin|passwordauthentication|permitemptypasswords|usepam|maxauthtries|x11forwarding|loglevel) '
+
+echo
+echo "SSH hardening completed."
+echo "Original configuration backup: $BACKUP"
