@@ -1,0 +1,141 @@
+2. firewall_ufw.sh
+README requirement
+ Run from VM console
+
+
+What it does:
+- Preserves existing UFW rules.
+- Allows the SSH port before enabling the firewall.
+- Sets incoming traffic to deny by default.
+- Allows outgoing traffic.
+- Enables low-level firewall logging.
+- Keeps UFW enabled on boot.
+- Does not reset your firewall configuration.
+
+
+
+
+
+
+#!/usr/bin/env bash
+# firewall_ufw.sh
+# Debian 12 Bookworm only
+# Run: sudo bash firewall_ufw.sh
+
+set -Eeuo pipefail
+umask 077
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Run using: sudo bash firewall_ufw.sh"
+    exit 1
+fi
+
+source /etc/os-release
+
+if [[ "$ID" != debian || "$VERSION_ID" != 12 ]]; then
+    echo "STOP: Debian 12 required."
+    exit 1
+fi
+
+if [[ -n "${SSH_CONNECTION:-}" ]]; then
+    echo "STOP: Run this script from the VM's local console."
+    exit 1
+fi
+
+if ! command -v ufw >/dev/null 2>&1; then
+    echo "UFW is not installed."
+    echo "Install it from trusted Debian 12 Bookworm repositories first."
+    exit 1
+fi
+
+if ! command -v sshd >/dev/null 2>&1; then
+    echo "STOP: SSH server configuration is unavailable."
+    exit 1
+fi
+
+echo "=== CURRENT FIREWALL ==="
+ufw status verbose || true
+
+echo
+echo "=== SSH CONFIGURATION ==="
+
+if ! sshd -t; then
+    echo "STOP: SSH configuration currently has errors."
+    exit 1
+fi
+
+SSH_PORTS="$(sshd -T | awk '$1=="port" {print $2}' | sort -un)"
+
+if [[ -z "$SSH_PORTS" ]]; then
+    echo "STOP: Could not determine SSH listening port."
+    exit 1
+fi
+
+echo "SSH ports:"
+printf '%s\n' "$SSH_PORTS"
+
+echo
+echo "=== CURRENT LISTENING SERVICES ==="
+ss -tulpn
+
+echo
+echo "Only SSH is listed as a critical service in your README."
+echo "Review other listening services before enabling default deny."
+
+read -rp "Continue with UFW configuration? Type APPLY: " answer
+
+if [[ "$answer" != APPLY ]]; then
+    echo "Cancelled."
+    exit 0
+fi
+
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+BACKUP="/root/CP-UFW-BACKUP-$STAMP"
+
+mkdir -p "$BACKUP"
+chmod 700 "$BACKUP"
+
+cp -a /etc/ufw "$BACKUP/" 2>/dev/null || true
+cp -a /etc/default/ufw "$BACKUP/" 2>/dev/null || true
+
+echo
+echo "=== ALLOWING SSH FIRST ==="
+
+while read -r port; do
+    [[ "$port" =~ ^[0-9]+$ ]] || continue
+
+    echo "Allowing TCP port $port"
+
+    if ! ufw allow "$port/tcp"; then
+        echo "Failed to add SSH allowance."
+        echo "Firewall will not be enabled."
+        exit 1
+    fi
+done <<< "$SSH_PORTS"
+
+echo
+echo "=== DEFAULT FIREWALL POLICIES ==="
+
+ufw default deny incoming
+ufw default allow outgoing
+ufw logging low
+
+echo
+echo "=== ENABLING UFW ==="
+
+ufw --force enable
+
+echo
+echo "=== FINAL FIREWALL STATUS ==="
+
+ufw status verbose
+
+echo
+echo "=== SSH SERVICE STATUS ==="
+
+systemctl is-enabled ssh || true
+systemctl is-active ssh || true
+
+echo
+echo "UFW configuration completed."
+echo "Backup: $BACKUP"
