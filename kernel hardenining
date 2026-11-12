@@ -1,0 +1,158 @@
+1. kernel_hardening.sh
+Kernel configuration
+ Rollback on failure
+
+
+What it does:
+- Enables full ASLR (randomize_va_space=2).
+- Restricts kernel log access.
+- Restricts kernel pointer exposure.
+- Prevents SUID programs from producing unsafe core dumps.
+- Protects hardlinks, symlinks and special files.
+- Disables IPv4 source routing and redirects.
+- Enables SYN cookies.
+- Enables Martian packet logging.
+- Backs up existing settings.
+- Skips kernel parameters unavailable on your VM.
+It deliberately does not disable IPv6, USB, normal ICMP requests or network forwarding. Those changes could interfere with VM functionality.
+
+
+
+
+
+#!/usr/bin/env bash
+# kernel_hardening.sh
+# Debian 12 Bookworm only
+# Run: sudo bash kernel_hardening.sh
+
+set -Eeuo pipefail
+umask 077
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Run using: sudo bash kernel_hardening.sh"
+    exit 1
+fi
+
+source /etc/os-release
+
+if [[ "$ID" != debian || "$VERSION_ID" != 12 ||
+      "$VERSION_CODENAME" != bookworm ]]; then
+    echo "STOP: Debian 12 Bookworm required."
+    exit 1
+fi
+
+CONF="/etc/sysctl.d/99-cp-kernel-hardening.conf"
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+BACKUP="/root/CP-KERNEL-BACKUP-$STAMP"
+
+mkdir -p "$BACKUP"
+chmod 700 "$BACKUP"
+
+if [[ -e "$CONF" ]]; then
+    cp -a "$CONF" "$BACKUP/"
+    HAD_OLD=1
+else
+    HAD_OLD=0
+fi
+
+declare -A OLD
+declare -a APPLIED=()
+declare -a SETTINGS=(
+    "kernel.randomize_va_space=2"
+    "kernel.dmesg_restrict=1"
+    "kernel.kptr_restrict=2"
+    "fs.suid_dumpable=0"
+    "fs.protected_hardlinks=1"
+    "fs.protected_symlinks=1"
+    "fs.protected_fifos=2"
+    "fs.protected_regular=2"
+    "net.ipv4.conf.all.accept_source_route=0"
+    "net.ipv4.conf.default.accept_source_route=0"
+    "net.ipv4.conf.all.accept_redirects=0"
+    "net.ipv4.conf.default.accept_redirects=0"
+    "net.ipv4.conf.all.secure_redirects=0"
+    "net.ipv4.conf.default.secure_redirects=0"
+    "net.ipv4.conf.all.send_redirects=0"
+    "net.ipv4.conf.default.send_redirects=0"
+    "net.ipv4.conf.all.rp_filter=1"
+    "net.ipv4.conf.default.rp_filter=1"
+    "net.ipv4.conf.all.log_martians=1"
+    "net.ipv4.conf.default.log_martians=1"
+    "net.ipv4.icmp_echo_ignore_broadcasts=1"
+    "net.ipv4.icmp_ignore_bogus_error_responses=1"
+    "net.ipv4.tcp_syncookies=1"
+)
+
+rollback() {
+    echo "ERROR: Applying kernel settings failed."
+    echo "Restoring previously recorded runtime settings."
+
+    for key in "${APPLIED[@]}"; do
+        sysctl -w "$key=${OLD[$key]}" >/dev/null 2>&1 || true
+    done
+
+    if [[ $HAD_OLD -eq 1 ]]; then
+        cp -a "$BACKUP/$(basename "$CONF")" "$CONF"
+    else
+        rm -f "$CONF"
+    fi
+}
+
+TMP="$(mktemp /etc/sysctl.d/cp-kernel.XXXXXX)"
+
+{
+    echo "# CyberPatriot Debian 12 kernel hardening"
+    echo "# Managed by kernel_hardening.sh"
+    echo
+} > "$TMP"
+
+echo "=== APPLYING KERNEL SETTINGS ==="
+
+for item in "${SETTINGS[@]}"; do
+
+    key="${item%%=*}"
+    value="${item#*=}"
+
+    current="$(sysctl -n "$key" 2>/dev/null || true)"
+
+    if [[ -z "$current" ]]; then
+        echo "SKIPPED: $key is unavailable."
+        continue
+    fi
+
+    OLD["$key"]="$current"
+
+    if ! sysctl -w "$key=$value" >/dev/null; then
+        rollback
+        rm -f "$TMP"
+        exit 1
+    fi
+
+    APPLIED+=("$key")
+
+    printf '%s = %s\n' "$key" "$value" >> "$TMP"
+    echo "SET: $key = $value"
+done
+
+if ! mv "$TMP" "$CONF"; then
+    rollback
+    rm -f "$TMP"
+    exit 1
+fi
+
+chmod 644 "$CONF"
+chown root:root "$CONF"
+
+echo
+echo "=== FINAL VERIFICATION ==="
+
+while IFS='=' read -r key value; do
+    [[ -n "$key" ]] || continue
+    sysctl "$key" 2>/dev/null || true
+done < <(grep -E '^[a-z0-9_.]+[[:space:]]*=' "$CONF" |
+    sed 's/[[:space:]]*=[[:space:]]*/=/')
+
+echo
+echo "Kernel configuration completed."
+echo "Persistent configuration: $CONF"
+echo "Backup: $BACKUP"
