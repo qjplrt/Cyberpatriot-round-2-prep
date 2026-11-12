@@ -1,0 +1,13 @@
+A few things from your extra checklists that I would NOT blindly apply
+Recommendation	What to do
+Disable IPv6	Don't. Could break network access.
+Disable USB storage	Don't. Not in your README.
+Disable all ICMP	Don't. Could interfere with networking.
+Delete all ZIP/DEB files	Don't. Some may be legitimate work files.
+Remove Samba	Only if confirmed prohibited.
+Install antivirus/rootkit scanners	Don't.
+Delete /etc/rc.local	Inspect it first.
+Configure MySQL/PHP	Only if present and applicable.
+Disable every unfamiliar service	Inspect before disabling.
+
+Also, your fourth checklist covers Apache, MySQL and PHP. Those are generic historical hardening suggestions, not requirements in your current Debian README. Don't configure or remove those applications blindly.
