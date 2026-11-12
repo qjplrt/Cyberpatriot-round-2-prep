@@ -1,0 +1,682 @@
+
+#!/usr/bin/env bash
+# CyberPatriot Debian 12 Bookworm
+# 01_GOD_HARDEN.sh
+# Run: sudo bash 01_GOD_HARDEN.sh
+
+set -Eeuo pipefail
+umask 077
+shopt -s nullglob
+
+if [[ $EUID -ne 0 ]]; then
+    echo "Use: sudo bash 01_GOD_HARDEN.sh"
+    exit 1
+fi
+
+source /etc/os-release
+if [[ "$ID" != debian || "$VERSION_ID" != 12 ||
+      "$VERSION_CODENAME" != bookworm ]]; then
+    echo "STOP: Debian 12 Bookworm required. No OS migration allowed."
+    exit 1
+fi
+
+echo "CYBERPATRIOT DEBIAN 12 HARDENING"
+echo "Read the README and complete Desktop forensics FIRST."
+read -rp "Type READY when the Unique Identifier and forensics are done: " answer
+[[ "$answer" == READY ]] || exit 1
+
+ADMINS=(pparker tstark ppotts hhogan nfury mhill pcoulson)
+USERS=(bbanner swilson sstrange slang cdanvers okoye kbishop ybelova jfoster nleeds mjwatson jtorres pcarter)
+ALL=("${ADMINS[@]}" "${USERS[@]}")
+
+STAMP="$(date -u +%Y%m%d-%H%M%S)"
+BACKUP="/root/CP-BACKUP-$STAMP"
+REPORT="/root/CP-REPORT-$STAMP.txt"
+
+mkdir -p "$BACKUP"
+chmod 700 "$BACKUP"
+touch "$REPORT"
+chmod 600 "$REPORT"
+exec > >(tee -a "$REPORT") 2>&1
+
+backup_file() {
+    local f="$1"
+    [[ -e "$f" ]] || return 0
+    mkdir -p "$BACKUP$(dirname "$f")"
+    cp -a "$f" "$BACKUP$f"
+}
+
+echo
+echo "=== 1. BACKUPS ==="
+
+for f in \
+    /etc/passwd /etc/shadow /etc/group /etc/gshadow \
+    /etc/sudoers /etc/login.defs \
+    /etc/security/pwquality.conf \
+    /etc/ssh/sshd_config \
+    /etc/ssh/sshd_config.d \
+    /etc/ufw \
+    /etc/lightdm \
+    /etc/X11/default-display-manager \
+    /etc/apt/apt.conf.d \
+    /etc/sysctl.d \
+    /etc/xdg/mimeapps.list
+do
+    backup_file "$f"
+done
+
+cp -a /etc/pam.d "$BACKUP/pam.d"
+chmod -R go-rwx "$BACKUP"
+
+AUTOLOGIN_USER="$(
+    grep -RhsE '^[[:space:]]*autologin-user[[:space:]]*=' \
+        /etc/lightdm 2>/dev/null |
+    tail -1 | cut -d= -f2- | xargs 2>/dev/null || true
+)"
+
+echo "Detected automatic-login user: ${AUTOLOGIN_USER:-not explicitly configured}"
+
+echo
+echo "=== 2. DEBIAN 12 REPOSITORY CHECK ==="
+
+SOURCE_FILES=(
+    /etc/apt/sources.list
+    /etc/apt/sources.list.d/*.list
+    /etc/apt/sources.list.d/*.sources
+)
+
+SOURCE_TEXT=""
+
+for f in "${SOURCE_FILES[@]}"; do
+    [[ -f "$f" ]] || continue
+    SOURCE_TEXT+="$(
+        grep -E '^[[:space:]]*(deb(-src)?[[:space:]]|URIs:|Suites:)' "$f" \
+            2>/dev/null || true
+    )"$'\n'
+done
+
+echo "$SOURCE_TEXT"
+
+APT_SAFE=1
+
+# Do not follow moving aliases or another Debian release.
+if grep -Eiq '(^|[[:space:]])(stable|oldstable|trixie|forky|testing|sid|unstable)([[:space:]]|$)' <<< "$SOURCE_TEXT"; then
+    APT_SAFE=0
+fi
+
+if grep -Eiq 'bookworm-backports' <<< "$SOURCE_TEXT"; then
+    APT_SAFE=0
+fi
+
+if ! grep -Eiq 'bookworm' <<< "$SOURCE_TEXT"; then
+    APT_SAFE=0
+fi
+
+if [[ "$APT_SAFE" -eq 1 ]]; then
+    echo "Bookworm suite detected."
+    echo "Review the repository URLs above."
+    read -rp "Confirm these are trusted official Debian Bookworm repositories. Type BOOKWORM: " answer
+
+    if [[ "$answer" == BOOKWORM ]]; then
+        echo
+        echo "Refreshing package lists..."
+        if apt-get update; then
+            echo
+            echo "=== AVAILABLE PACKAGE UPDATES ==="
+            apt-cache policy chromium openssh-server systemd ufw
+
+            echo
+            echo "=== SAFE PACKAGE UPGRADE ==="
+            echo "No packages will be removed."
+
+            if apt-get --no-remove --with-new-pkgs upgrade -y; then
+                echo "Package upgrade completed."
+            else
+                echo "WARNING: Some packages were held back or failed."
+            fi
+
+            echo
+            echo "=== REQUIRED PACKAGES ==="
+            REQUIRED=(
+                chromium
+                openssh-server
+                ufw
+                libpam-pwquality
+            )
+
+            MISSING=()
+
+            for p in "${REQUIRED[@]}"; do
+                if ! dpkg-query -W -f='${Status}' "$p" 2>/dev/null |
+                    grep -q 'install ok installed'; then
+                    candidate="$(apt-cache policy "$p" |
+                        awk '/Candidate:/ {print $2; exit}')"
+
+                    if [[ -n "$candidate" && "$candidate" != "(none)" ]]; then
+                        MISSING+=("$p")
+                    else
+                        echo "Unavailable: $p"
+                    fi
+                fi
+            done
+
+            if ((${#MISSING[@]})); then
+                echo "Installing missing required packages: ${MISSING[*]}"
+                if ! DEBIAN_FRONTEND=noninteractive apt-get \
+                    --no-remove install -y "${MISSING[@]}"; then
+                    echo "WARNING: Some packages could not be installed."
+                fi
+            fi
+        else
+            echo "WARNING: apt-get update failed."
+        fi
+    else
+        echo "Package update skipped because repository confirmation failed."
+    fi
+else
+    echo "WARNING: Repository configuration is not confirmed Bookworm-only."
+    echo "Package updates/installations skipped. Do not change it to stable."
+fi
+
+echo
+echo "=== 3. AUTHORIZED USER AUDIT ==="
+
+for u in "${ALL[@]}"; do
+    if id "$u" >/dev/null 2>&1; then
+        echo "FOUND: $u"
+    else
+        echo "WARNING: MISSING AUTHORIZED ACCOUNT: $u"
+    fi
+done
+
+echo
+echo "=== 4. ADMINISTRATOR PERMISSIONS ==="
+
+getent group sudo >/dev/null || groupadd sudo
+
+for u in "${ADMINS[@]}"; do
+    if id "$u" >/dev/null 2>&1; then
+        usermod -aG sudo "$u"
+        echo "Administrator sudo membership ensured: $u"
+    fi
+done
+
+for u in "${USERS[@]}"; do
+    id "$u" >/dev/null 2>&1 || continue
+
+    for g in sudo admin wheel lpadmin adm; do
+        if getent group "$g" >/dev/null &&
+           id -nG "$u" | tr ' ' '\n' | grep -qx "$g"; then
+            gpasswd -d "$u" "$g" || true
+            echo "Removed $u from administrator-like group $g"
+        fi
+    done
+done
+
+echo
+echo "--- Privileged group memberships ---"
+for g in sudo admin wheel lpadmin adm; do
+    getent group "$g" || true
+done
+
+echo
+echo "--- Sudoers verification ---"
+visudo -c || true
+
+grep -RHE '^[[:space:]]*[^#].*(ALL|NOPASSWD|!authenticate)' \
+    /etc/sudoers /etc/sudoers.d 2>/dev/null || true
+
+echo
+echo "--- Additional user sudo privileges: manual review ---"
+for u in "${ALL[@]}"; do
+    id "$u" >/dev/null 2>&1 || continue
+    sudo -l -U "$u" 2>&1 || true
+done
+
+echo
+echo "=== 5. UNAUTHORIZED ACCOUNT REVIEW ==="
+
+echo "Human accounts not listed in the README:"
+
+while IFS=: read -r name _ uid _ _ home shell; do
+    [[ "$uid" =~ ^[0-9]+$ ]] || continue
+    (( uid >= 1000 && uid < 65534 )) || continue
+    [[ "$name" != nobody ]] || continue
+    [[ "$shell" != */nologin && "$shell" != */false ]] || continue
+
+    case " ${ALL[*]} " in
+        *" $name "*) continue ;;
+    esac
+
+    echo "UNLISTED ACCOUNT: $name UID=$uid HOME=$home"
+
+    if [[ "$name" == "$AUTOLOGIN_USER" ||
+          "$name" == "${SUDO_USER:-}" ]]; then
+        echo "Preserved: automatic-login/current account."
+        continue
+    fi
+
+    read -rp "Delete ONLY the account record for $name? Type REMOVE to confirm: " confirm
+
+    if [[ "$confirm" == REMOVE ]]; then
+        userdel "$name"
+        echo "Account record removed. Home directory retained."
+    else
+        echo "Account retained."
+    fi
+done < /etc/passwd
+
+echo
+echo "=== 6. PASSWORD ACCOUNT CHECKS ==="
+
+echo "--- UID 0 accounts ---"
+awk -F: '$3 == 0 {print $1 ":" $3 ":" $7}' /etc/passwd
+
+echo "--- Accounts with empty password fields ---"
+awk -F: '$2 == "" {print $1}' /etc/shadow
+
+echo
+echo "=== 7. PASSWORD AGING POLICY ==="
+
+set_login_value() {
+    local key="$1" value="$2"
+    if grep -qE "^[[:space:]]*${key}[[:space:]]+" /etc/login.defs; then
+        sed -i -E "s|^[[:space:]]*${key}[[:space:]]+.*|${key} ${value}|" /etc/login.defs
+    else
+        echo "$key $value" >> /etc/login.defs
+    fi
+}
+
+# Values found in your previous-round scoring notes.
+set_login_value PASS_MAX_DAYS 90
+set_login_value PASS_MIN_DAYS 7
+set_login_value PASS_WARN_AGE 5
+
+for u in "${ALL[@]}"; do
+    id "$u" >/dev/null 2>&1 || continue
+
+    if [[ -n "$AUTOLOGIN_USER" && "$u" == "$AUTOLOGIN_USER" ]]; then
+        echo "Skipping aging change for automatic-login account: $u"
+        continue
+    fi
+
+    chage -m 7 -M 90 -W 5 "$u"
+done
+
+echo
+echo "=== 8. PASSWORD COMPLEXITY ==="
+
+PAM="/etc/pam.d/common-password"
+
+if [[ -f /usr/share/pam-configs/pwquality &&
+      -f /etc/security/pwquality.conf ]]; then
+
+    backup_file /etc/security/pwquality.conf
+
+    set_pwquality() {
+        local key="$1" value="$2"
+        if grep -qE "^[[:space:]]*${key}[[:space:]]*=" /etc/security/pwquality.conf; then
+            sed -i -E "s|^[[:space:]]*${key}[[:space:]]*=.*|${key} = ${value}|" /etc/security/pwquality.conf
+        else
+            echo "$key = $value" >> /etc/security/pwquality.conf
+        fi
+    }
+
+    set_pwquality minlen 12
+    set_pwquality difok 3
+    set_pwquality ucredit -1
+    set_pwquality lcredit -1
+    set_pwquality dcredit -1
+    set_pwquality ocredit -1
+    set_pwquality maxrepeat 3
+
+    if ! grep -q 'pam_pwquality.so' "$PAM"; then
+        if DEBIAN_FRONTEND=noninteractive pam-auth-update --enable pwquality; then
+            if grep -q 'pam_pwquality.so' "$PAM"; then
+                echo "Password quality module enabled."
+            else
+                echo "WARNING: PAM profile did not appear in common-password."
+                cp -a "$BACKUP/pam.d/." /etc/pam.d/
+            fi
+        else
+            echo "WARNING: PAM profile update failed; restoring previous PAM files."
+            cp -a "$BACKUP/pam.d/." /etc/pam.d/
+        fi
+    else
+        echo "Password quality module already active."
+    fi
+else
+    echo "WARNING: Password quality profile unavailable. PAM left unchanged."
+fi
+
+echo
+echo "Password history module status:"
+grep -n 'pam_pwhistory.so' /etc/pam.d/common-password || \
+    echo "Password history is not configured; inspect manually if required."
+
+echo
+echo "=== 9. ROOT ACCOUNT ==="
+
+passwd -l root || true
+
+chown root:root /etc/passwd /etc/group
+chmod 644 /etc/passwd /etc/group
+
+chown root:shadow /etc/shadow /etc/gshadow
+chmod 640 /etc/shadow /etc/gshadow
+
+echo
+echo "=== 10. SSH HARDENING ==="
+
+SSHD=/etc/ssh/sshd_config
+DROP=/etc/ssh/sshd_config.d/00-cp-hardening.conf
+
+if command -v sshd >/dev/null 2>&1; then
+    mkdir -p /etc/ssh/sshd_config.d
+    backup_file "$SSHD"
+    backup_file "$DROP"
+
+    if ! grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/' "$SSHD"; then
+        sed -i '1i Include /etc/ssh/sshd_config.d/*.conf' "$SSHD"
+    fi
+
+    cat > "$DROP" <<'EOF'
+PermitRootLogin no
+PermitEmptyPasswords no
+PasswordAuthentication yes
+UsePAM yes
+X11Forwarding no
+MaxAuthTries 4
+IgnoreRhosts yes
+HostbasedAuthentication no
+LogLevel VERBOSE
+EOF
+
+    chmod 600 "$DROP"
+
+    if sshd -t && \
+       sshd -T | grep -qx 'permitrootlogin no' && \
+       sshd -T | grep -qx 'passwordauthentication yes'; then
+
+        systemctl enable ssh
+        systemctl reload ssh || systemctl restart ssh
+        echo "SSH settings validated."
+
+    else
+        echo "ERROR: SSH validation failed. Restoring previous configuration."
+
+        if [[ -e "$BACKUP$DROP" ]]; then
+            cp -a "$BACKUP$DROP" "$DROP"
+        else
+            rm -f "$DROP"
+        fi
+
+        cp -a "$BACKUP$SSHD" "$SSHD"
+        systemctl restart ssh || true
+    fi
+else
+    echo "WARNING: sshd is unavailable. No SSH configuration written."
+fi
+
+echo
+echo "=== 11. UFW FIREWALL ==="
+
+if command -v ufw >/dev/null 2>&1 && command -v sshd >/dev/null 2>&1; then
+    SSH_PORTS="$(sshd -T | awk '$1 == "port" {print $2}' | sort -nu)"
+    [[ -n "$SSH_PORTS" ]] || SSH_PORTS=22
+
+    # Allow remote SSH BEFORE applying deny-incoming.
+    while read -r port; do
+        [[ "$port" =~ ^[0-9]+$ ]] || continue
+        ufw allow "$port/tcp"
+    done <<< "$SSH_PORTS"
+
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw logging low
+
+    if [[ -z "${SSH_CONNECTION:-}" ]]; then
+        ufw --force enable
+        echo "UFW enabled."
+    else
+        echo "Running over SSH: rules configured but firewall activation skipped."
+        echo "Enable UFW from the VM console after checking SSH rules."
+    fi
+
+    ufw status verbose
+else
+    echo "UFW or SSH unavailable. Firewall not activated."
+fi
+
+echo
+echo "=== 12. AUTOMATIC PACKAGE-LIST REFRESH ==="
+
+mkdir -p /etc/apt/apt.conf.d
+
+cat > /etc/apt/apt.conf.d/99-cp-refresh <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Download-Upgradeable-Packages "1";
+EOF
+
+systemctl enable apt-daily.timer 2>/dev/null || true
+
+echo "Automatic package-list refresh enabled."
+echo "Automatic unattended installation was not enabled."
+
+echo
+echo "=== 13. CHROMIUM ==="
+
+if command -v chromium >/dev/null 2>&1; then
+    mkdir -p /etc/chromium/policies/managed
+
+    cat > /etc/chromium/policies/managed/10-cyberpatriot.json <<'EOF'
+{
+  "DefaultPopupsSetting": 2
+}
+EOF
+
+    chmod 644 /etc/chromium/policies/managed/10-cyberpatriot.json
+
+    update-alternatives --install /usr/bin/x-www-browser \
+        x-www-browser /usr/bin/chromium 200 || true
+    update-alternatives --set x-www-browser /usr/bin/chromium || true
+
+    mkdir -p /etc/xdg
+    touch /etc/xdg/mimeapps.list
+
+    if ! grep -q '^\[Default Applications\]' /etc/xdg/mimeapps.list; then
+        echo '[Default Applications]' >> /etc/xdg/mimeapps.list
+    fi
+
+    for mime in x-scheme-handler/http x-scheme-handler/https \
+                text/html application/xhtml+xml; do
+        if grep -q "^$mime=" /etc/xdg/mimeapps.list; then
+            sed -i "s|^$mime=.*|$mime=chromium.desktop;|" /etc/xdg/mimeapps.list
+        else
+            sed -i "/^\[Default Applications\]/a $mime=chromium.desktop;" /etc/xdg/mimeapps.list
+        fi
+    done
+
+    chromium --version || true
+else
+    echo "Chromium is not installed. Check package availability manually."
+fi
+
+echo
+echo "=== 14. LIGHTDM ==="
+
+DISPLAY_MANAGER="$(cat /etc/X11/default-display-manager 2>/dev/null || true)"
+echo "$DISPLAY_MANAGER"
+
+if grep -qi lightdm <<< "$DISPLAY_MANAGER"; then
+    mkdir -p /etc/lightdm/lightdm.conf.d
+
+    cat > /etc/lightdm/lightdm.conf.d/99-cp-security.conf <<'EOF'
+[Seat:*]
+allow-guest=false
+EOF
+
+    echo "LightDM preserved. Guest login disabled."
+    echo "Automatic-login configuration left untouched."
+else
+    echo "WARNING: LightDM is not the configured display manager."
+fi
+
+echo
+echo "=== 15. APACHE ==="
+
+if systemctl list-unit-files --no-legend 2>/dev/null |
+    grep -q '^apache2\.service'; then
+
+    systemctl disable --now apache2.service || true
+    echo "Apache service disabled if present. Package retained."
+else
+    echo "Apache service not found."
+fi
+
+echo
+echo "=== 16. CONSERVATIVE KERNEL SECURITY ==="
+
+SYSCTL=/etc/sysctl.d/99-cp-security.conf
+backup_file "$SYSCTL"
+
+cat > "$SYSCTL" <<'EOF'
+kernel.randomize_va_space = 2
+kernel.dmesg_restrict = 1
+kernel.kptr_restrict = 2
+fs.suid_dumpable = 0
+fs.protected_hardlinks = 1
+fs.protected_symlinks = 1
+fs.protected_fifos = 2
+fs.protected_regular = 2
+net.ipv4.ip_forward = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.tcp_syncookies = 1
+EOF
+
+sysctl --system || echo "WARNING: Review any rejected sysctl settings."
+
+echo
+echo "=== 17. APPS: REVIEW ONLY - NOTHING REMOVED ==="
+
+dpkg-query -W -f='${binary:Package} ${Version}\n' 2>/dev/null |
+    grep -Ei 'nmap|zenmap|nmapsi4|ophcrack|john|hydra|aircrack|wireshark|tshark|tcpdump|netcat|nikto|metasploit|ettercap|kismet|medusa|samba|apache|nginx|lighttpd|telnet|xinetd' || true
+
+echo
+echo "=== 18. PROHIBITED MEDIA: REVIEW ONLY ==="
+
+SEARCH_DIRS=()
+for d in /home /root /tmp /var/tmp /opt /srv /mnt /media /var/www; do
+    [[ -d "$d" ]] && SEARCH_DIRS+=("$d")
+done
+
+if ((${#SEARCH_DIRS[@]})); then
+    find "${SEARCH_DIRS[@]}" -type f \( \
+        -iname '*.mp3' -o -iname '*.mp4' -o -iname '*.m4a' \
+        -o -iname '*.flac' -o -iname '*.wav' -o -iname '*.ogg' \
+        -o -iname '*.aac' -o -iname '*.avi' -o -iname '*.mkv' \
+        -o -iname '*.mov' -o -iname '*.webm' \
+        -o -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' \
+        -o -iname '*.gif' -o -iname '*.bmp' -o -iname '*.webp' \
+        \) -printf '%u:%g %m %p\n' 2>/dev/null || true
+fi
+
+echo
+echo "=== 19. PERSISTENCE AND BACKDOOR AUDIT ==="
+
+echo "--- Listening ports ---"
+ss -tulpn || true
+
+echo "--- Running services ---"
+systemctl list-units --type=service --state=running --no-pager || true
+
+echo "--- Enabled services ---"
+systemctl list-unit-files --type=service --state=enabled --no-pager || true
+
+echo "--- CCS: DO NOT STOP OR DISABLE ---"
+systemctl list-units --all --no-pager | grep -i ccs || true
+pgrep -a -fi ccs || true
+
+echo "--- Cron ---"
+for p in /etc/crontab /etc/cron.d /etc/cron.hourly \
+         /etc/cron.daily /etc/cron.weekly /etc/cron.monthly \
+         /var/spool/cron/crontabs /var/spool/anacron; do
+    [[ -e "$p" ]] && ls -la "$p"
+done
+
+echo "--- rc.local ---"
+if [[ -f /etc/rc.local ]]; then cat /etc/rc.local; fi
+
+echo "--- Hidden home files ---"
+find /home -maxdepth 3 -type f -name '.*' \
+    -printf '%u:%g %m %p\n' 2>/dev/null || true
+
+echo "--- SUID/SGID candidates ---"
+find /usr /bin /sbin /opt /usr/local -xdev -type f \
+    \( -perm -4000 -o -perm -2000 \) \
+    -printf '%m %u:%g %p\n' 2>/dev/null || true
+
+echo "--- Unowned files ---"
+find /home /opt /usr/local /etc -xdev \
+    \( -nouser -o -nogroup \) -printf '%u:%g %m %p\n' 2>/dev/null || true
+
+echo "--- Host configuration ---"
+cat /etc/hosts
+cat /etc/host.conf 2>/dev/null || true
+
+echo "--- Failed login attempts ---"
+grep -Eih 'Failed password|Invalid user|authentication failure' \
+    /var/log/auth.log 2>/dev/null | tail -50 || true
+
+echo
+echo "=== 20. FINAL VERIFICATION ==="
+
+echo "--- UID 0 ---"
+awk -F: '$3 == 0 {print $1 ":" $3 ":" $7}' /etc/passwd
+
+echo "--- Sudo group ---"
+getent group sudo
+
+echo "--- SSH effective settings ---"
+sshd -t && sshd -T | grep -E \
+'^(permitrootlogin|passwordauthentication|permitemptypasswords|usepam|allowusers|denyusers|port) ' || true
+
+echo "--- SSH service ---"
+systemctl is-active ssh || true
+systemctl is-enabled ssh || true
+
+echo "--- UFW ---"
+ufw status verbose 2>/dev/null || true
+
+echo "--- Display manager ---"
+cat /etc/X11/default-display-manager 2>/dev/null || true
+
+echo "--- Password ages ---"
+for u in "${ALL[@]}"; do
+    if id "$u" >/dev/null 2>&1; then
+        echo "[$u]"
+        chage -l "$u"
+    fi
+done
+
+echo "--- Required software versions ---"
+chromium --version 2>/dev/null || true
+dpkg-query -W -f='${binary:Package} ${Version}\n' \
+    openssh-server systemd ufw chromium 2>/dev/null || true
+
+echo
+echo "================================================"
+echo "MAIN SCRIPT COMPLETED"
+echo "Backups: $BACKUP"
+echo "Report: $REPORT"
+echo "No unauthorized app purges or media deletions."
+echo "================================================"
